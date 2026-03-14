@@ -82,9 +82,9 @@ Brokers stay in Outlook the entire time — no browser needed.
 ### How It Works
 
 1. Broker emails `tools@resoluteinv.com` → gets an auto-reply with the tool menu
-2. Broker clicks a tool → Outlook opens a compose window pre-filled with fields
-3. Broker fills in the blanks and sends
-4. Power Automate picks up the email, calls the API, and replies with the PDF attached
+2. Broker clicks a tool button → Outlook opens a compose window with the subject pre-set
+3. Broker types their deal info (freeform) and optionally attaches PDFs (e.g. listing brochures)
+4. Power Automate picks up the email, sends the text + attachments to the API, and replies with the PDF
 
 ### Step 1: Create the Shared Mailbox
 
@@ -102,14 +102,30 @@ Brokers stay in Outlook the entire time — no browser needed.
 
 ### Step 3: Set Up Power Automate
 
-This flow watches for filled-in tool submissions, calls the API, and replies with the PDF.
+This flow watches for tool submissions, extracts text + attachments, calls the API, and replies with the PDF.
 
 1. Go to **https://make.powerautomate.com** → Create → Automated cloud flow
 2. Trigger: **"When a new email arrives (V3)"**
    - Mailbox: `tools@resoluteinv.com`
    - Subject filter: leave blank (the flow will filter by subject)
+   - **Include Attachments**: Yes
 3. Add a **Condition**: Check that the subject contains one of: `SALE LOI`, `LEASE LOI`, `BROKERAGE AGREEMENT`, `TENANT REP PROPOSAL`, `BROCHURE SUMMARY`, `TOUR SUMMARY`, `DRAFT EMAIL`, `ADD CONTACT`
-4. If yes → Add an **HTTP** action:
+4. If yes → Add an **Initialize variable** action:
+   - Name: `attachmentsArray`
+   - Type: Array
+   - Value: `[]`
+5. Add an **"Apply to each"** over `triggerOutputs()?['body/attachments']`:
+   - Inside, add **Append to array variable**:
+     - Name: `attachmentsArray`
+     - Value:
+       ```json
+       {
+         "name": "@{items('Apply_to_each')?['name']}",
+         "contentType": "@{items('Apply_to_each')?['contentType']}",
+         "content": "@{items('Apply_to_each')?['contentBytes']}"
+       }
+       ```
+6. After the loop, add an **HTTP** action:
    - Method: `POST`
    - URI: `https://YOUR-VERCEL-URL.vercel.app/api/generate`
    - Headers: `Content-Type: application/json`
@@ -117,22 +133,24 @@ This flow watches for filled-in tool submissions, calls the API, and replies wit
      ```json
      {
        "emailSubject": "@{triggerOutputs()?['body/subject']}",
-       "emailBody": "@{triggerOutputs()?['body/body']}"
+       "emailBody": "@{triggerOutputs()?['body/body']}",
+       "attachments": @{variables('attachmentsArray')}
      }
      ```
-5. Add a **"Reply to email (V2)"** action:
+7. Add a **"Reply to email (V2)"** action:
    - Message ID: use the trigger's Message ID
    - Body: `Your document is attached.`
    - Attachments Name: `resolute-@{triggerOutputs()?['body/subject']}-@{utcNow()}.pdf`
    - Attachments Content: use the HTTP action's body (the PDF bytes)
-6. If no (subject doesn't match) → Do nothing (the auto-reply rule handles menu requests)
-7. **Save** and **Turn on** the flow
+8. If no (subject doesn't match) → Do nothing (the auto-reply rule handles menu requests)
+9. **Save** and **Turn on** the flow
 
 ### Step 4: Test It
 
 1. Send an email to `tools@resoluteinv.com` with no specific subject → you should get the menu
-2. Click "Sale LOI" in the menu → fill in the fields → send
+2. Click "Sale LOI" in the menu → type your deal info → send
 3. Within ~30 seconds, you should get a reply with the branded PDF attached
+4. Try "Brochure Summary" with PDF brochures attached — the system will read and summarize them
 
 ---
 

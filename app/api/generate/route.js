@@ -6,7 +6,7 @@ export const runtime = 'nodejs';
 
 export async function POST(request) {
   try {
-    const { toolId, formData, emailSubject, emailBody } = await request.json();
+    const { toolId, formData, emailSubject, emailBody, attachments } = await request.json();
 
     // Resolve tool — from toolId (web app) or emailSubject (email flow)
     const resolvedToolId = toolId || resolveToolFromSubject(emailSubject);
@@ -23,7 +23,6 @@ export async function POST(request) {
     // Build the user prompt — from structured formData (web) or raw emailBody (email)
     let filledFields;
     if (emailBody) {
-      // Email flow: body is already "Label: value" lines from the mailto template
       filledFields = emailBody.trim();
     } else {
       filledFields = Object.entries(formData || {})
@@ -36,8 +35,54 @@ export async function POST(request) {
         .join('\n');
     }
 
-    if (!filledFields) {
-      return Response.json({ error: 'No fields provided' }, { status: 400 });
+    if (!filledFields && (!attachments || attachments.length === 0)) {
+      return Response.json({ error: 'No fields or attachments provided' }, { status: 400 });
+    }
+
+    // Build message content — text + any PDF/image attachments
+    const messageContent = [];
+
+    // Add text input
+    const textPrompt = filledFields
+      ? `Here are the inputs:\n\n${filledFields}\n\nGenerate the output as specified. Return ONLY valid JSON.`
+      : 'Generate the output based on the attached documents. Return ONLY valid JSON.';
+    messageContent.push({ type: 'text', text: textPrompt });
+
+    // Add attachments (PDFs sent as documents, images as images)
+    if (attachments && attachments.length > 0) {
+      for (const att of attachments) {
+        if (!att.content) continue;
+
+        if (att.contentType === 'application/pdf') {
+          messageContent.push({
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: 'application/pdf',
+              data: att.content,
+            },
+          });
+        } else if (att.contentType && att.contentType.startsWith('image/')) {
+          messageContent.push({
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: att.contentType,
+              data: att.content,
+            },
+          });
+        }
+        // Other file types are skipped
+      }
+
+      // Add context about attachments
+      const attNames = attachments.filter(a => a.name).map(a => a.name).join(', ');
+      if (attNames) {
+        messageContent.push({
+          type: 'text',
+          text: `The above documents were attached: ${attNames}. Use their content as input alongside any text provided.`,
+        });
+      }
     }
 
     // Call Claude
@@ -50,11 +95,11 @@ export async function POST(request) {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 2048,
+        max_tokens: 4096,
         system: tool.systemPrompt,
         messages: [{
           role: 'user',
-          content: `Here are the inputs:\n\n${filledFields}\n\nGenerate the output as specified. Return ONLY valid JSON.`,
+          content: messageContent,
         }],
       }),
     });
