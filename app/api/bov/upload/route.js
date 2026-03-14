@@ -24,35 +24,24 @@ export async function POST(request) {
     const buffer = Buffer.from(fileBase64, 'base64');
     const workbook = XLSX.read(buffer, { type: 'buffer' });
 
-    // Search all sheets and cells for HTML content
+    // Search all sheets and cells for the HTML cell
     let htmlContent = null;
 
     for (const sheetName of workbook.SheetNames) {
       const sheet = workbook.Sheets[sheetName];
 
-      // First try: check if the sheet itself can be converted to HTML
-      // (AutoSheets may put the HTML as the sheet content)
-      const sheetHtml = XLSX.utils.sheet_to_html(sheet);
-
-      // Second: scan cells for raw HTML strings
       for (const cellRef of Object.keys(sheet)) {
         if (cellRef.startsWith('!')) continue; // skip metadata keys
         const cell = sheet[cellRef];
         const value = cell?.v || cell?.w || '';
         const str = String(value).trim();
 
-        // Look for cells containing HTML (starts with < or <!DOCTYPE)
+        // AutoSheets puts the full HTML document in a single cell
         if (str.length > 50 && (str.startsWith('<') || str.startsWith('<!DOCTYPE'))) {
-          // Prefer the longest HTML string found (most likely the full document)
           if (!htmlContent || str.length > htmlContent.length) {
             htmlContent = str;
           }
         }
-      }
-
-      // If no raw HTML found in cells, use the sheet-to-HTML conversion
-      if (!htmlContent && sheetHtml) {
-        htmlContent = sheetHtml;
       }
     }
 
