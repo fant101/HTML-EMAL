@@ -1,0 +1,44 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #0b140b;
+  --surface: #131f13;
+  --surface-light: #1a2c1a;
+  --border: #2a3f2a;
+  --gold: #cba135;
+  --gold-muted: #a8862d;
+  --gold-light: #e8c766;
+  --text: #d4ddd4;
+  --text-muted: #8a9a8a;
+  --white: #f0f4f0;
+  --error: #c45c5c;
+  --font-head: 'Cormorant Garamond', Georgia, serif;
+  --font-body: 'DM Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  min-height: 100vh;
+}
+
+input, textarea, select {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--surface-light);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--white);
+  font-size: 14px;
+  font-family: var(--font-body);
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+input:focus, textarea:focus, select:focus {
+  border-color: var(--gold);
+}
+
+textarea { resize: vertical; }
+select { appearance: none; }
