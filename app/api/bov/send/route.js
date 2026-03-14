@@ -20,6 +20,11 @@ export async function POST(request) {
 
     const { formData, attachments } = await request.json();
 
+    const senderEmail = formData?.senderEmail?.trim();
+    if (!senderEmail) {
+      return Response.json({ error: 'Your email address is required so AutoSheets can send the response back to you.' }, { status: 400 });
+    }
+
     // Build email body from form fields
     const lines = [];
     if (formData?.propertyAddress) lines.push(`Property Address: ${formData.propertyAddress}`);
@@ -30,9 +35,13 @@ export async function POST(request) {
     const bodyText = lines.join('\n') || 'BOV request — see attached documents.';
 
     // Build Resend email payload
+    // reply_to = user's email so AutoSheets responds directly to them
+    // cc = user's email so they get a copy of the outgoing request
     const emailPayload = {
       from: bovFrom,
       to: 'agent@autosheets.io',
+      reply_to: senderEmail,
+      cc: senderEmail,
       subject: 'BOV',
       text: bodyText,
     };
