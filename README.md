@@ -75,15 +75,64 @@ Vercel gives you a URL like `resolute-team-tools.vercel.app`. That's your live a
 
 ---
 
-## Outlook Autoresponder Setup
+## Outlook Email Workflow
 
-To let brokers email `tools@resoluteinv.com` and get back the tool menu:
+Brokers stay in Outlook the entire time — no browser needed.
 
-1. In Microsoft 365 Admin Center, create a shared mailbox: `tools@resoluteinv.com`
-2. Open the mailbox in Outlook
-3. Go to Settings → Mail → Rules
-4. Create a rule: When message arrives → Reply with the HTML template
-5. Paste in the HTML email template (the `resolute-team-tools-email.html` file)
+### How It Works
+
+1. Broker emails `tools@resoluteinv.com` → gets an auto-reply with the tool menu
+2. Broker clicks a tool → Outlook opens a compose window pre-filled with fields
+3. Broker fills in the blanks and sends
+4. Power Automate picks up the email, calls the API, and replies with the PDF attached
+
+### Step 1: Create the Shared Mailbox
+
+1. In **Microsoft 365 Admin Center** → Shared mailboxes → Add
+2. Name: `tools@resoluteinv.com`
+3. Grant "Send As" permissions to a service account or admin
+
+### Step 2: Set Up the Menu Auto-Reply
+
+1. Open the shared mailbox in Outlook
+2. Go to **Settings → Mail → Rules**
+3. Create a rule: "When a new message arrives" → "Reply using a specific template"
+4. Paste the contents of `resolute-team-tools-email.html` as the reply template
+5. Add a condition to exclude emails with tool subjects (SALE LOI, LEASE LOI, etc.) so the menu doesn't re-send when brokers submit a filled form
+
+### Step 3: Set Up Power Automate
+
+This flow watches for filled-in tool submissions, calls the API, and replies with the PDF.
+
+1. Go to **https://make.powerautomate.com** → Create → Automated cloud flow
+2. Trigger: **"When a new email arrives (V3)"**
+   - Mailbox: `tools@resoluteinv.com`
+   - Subject filter: leave blank (the flow will filter by subject)
+3. Add a **Condition**: Check that the subject contains one of: `SALE LOI`, `LEASE LOI`, `BROKERAGE AGREEMENT`, `TENANT REP PROPOSAL`, `BROCHURE SUMMARY`, `TOUR SUMMARY`, `DRAFT EMAIL`, `ADD CONTACT`
+4. If yes → Add an **HTTP** action:
+   - Method: `POST`
+   - URI: `https://YOUR-VERCEL-URL.vercel.app/api/generate`
+   - Headers: `Content-Type: application/json`
+   - Body:
+     ```json
+     {
+       "emailSubject": "@{triggerOutputs()?['body/subject']}",
+       "emailBody": "@{triggerOutputs()?['body/body']}"
+     }
+     ```
+5. Add a **"Reply to email (V2)"** action:
+   - Message ID: use the trigger's Message ID
+   - Body: `Your document is attached.`
+   - Attachments Name: `resolute-@{triggerOutputs()?['body/subject']}-@{utcNow()}.pdf`
+   - Attachments Content: use the HTTP action's body (the PDF bytes)
+6. If no (subject doesn't match) → Do nothing (the auto-reply rule handles menu requests)
+7. **Save** and **Turn on** the flow
+
+### Step 4: Test It
+
+1. Send an email to `tools@resoluteinv.com` with no specific subject → you should get the menu
+2. Click "Sale LOI" in the menu → fill in the fields → send
+3. Within ~30 seconds, you should get a reply with the branded PDF attached
 
 ---
 

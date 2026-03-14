@@ -1,4 +1,4 @@
-import { getToolById } from '@/lib/tools';
+import { getToolById, resolveToolFromSubject } from '@/lib/tools';
 import { generatePDF } from '@/lib/pdf';
 
 export const maxDuration = 60; // Vercel Pro plan; change to 10 if on Hobby plan
@@ -6,10 +6,11 @@ export const runtime = 'nodejs';
 
 export async function POST(request) {
   try {
-    const { toolId, formData } = await request.json();
+    const { toolId, formData, emailSubject, emailBody } = await request.json();
 
-    // Validate
-    const tool = getToolById(toolId);
+    // Resolve tool — from toolId (web app) or emailSubject (email flow)
+    const resolvedToolId = toolId || resolveToolFromSubject(emailSubject);
+    const tool = getToolById(resolvedToolId);
     if (!tool) {
       return Response.json({ error: 'Unknown tool' }, { status: 400 });
     }
@@ -19,16 +20,21 @@ export async function POST(request) {
       return Response.json({ error: 'API key not configured' }, { status: 500 });
     }
 
-    // Build the user prompt from form data
-    const filledFields = Object.entries(formData)
-      .filter(([, v]) => v && String(v).trim())
-      .map(([k, v]) => {
-        // Find the field label for better context
-        const fieldDef = tool.fields.find(f => f.key === k);
-        const label = fieldDef ? fieldDef.label : k;
-        return `${label}: ${v}`;
-      })
-      .join('\n');
+    // Build the user prompt — from structured formData (web) or raw emailBody (email)
+    let filledFields;
+    if (emailBody) {
+      // Email flow: body is already "Label: value" lines from the mailto template
+      filledFields = emailBody.trim();
+    } else {
+      filledFields = Object.entries(formData || {})
+        .filter(([, v]) => v && String(v).trim())
+        .map(([k, v]) => {
+          const fieldDef = tool.fields.find(f => f.key === k);
+          const label = fieldDef ? fieldDef.label : k;
+          return `${label}: ${v}`;
+        })
+        .join('\n');
+    }
 
     if (!filledFields) {
       return Response.json({ error: 'No fields provided' }, { status: 400 });
