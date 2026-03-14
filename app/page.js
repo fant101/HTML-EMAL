@@ -26,7 +26,11 @@ function ToolApp() {
   const [attachments, setAttachments] = useState([]);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef(null);
+  const bovFileInputRef = useRef(null);
   const topRef = useRef(null);
+
+  // BOV flow state: null → 'sent' → 'converting'
+  const [bovPhase, setBovPhase] = useState(null);
 
   // Auth state
   const [authed, setAuthed] = useState(false);
@@ -90,6 +94,7 @@ function ToolApp() {
     setActiveTool(id);
     setFormData({});
     setAttachments([]);
+    setBovPhase(null);
     setError('');
     setSuccess('');
     window.history.pushState({}, '', id ? `?tool=${id}` : '/');
@@ -99,6 +104,7 @@ function ToolApp() {
     setActiveTool(null);
     setFormData({});
     setAttachments([]);
+    setBovPhase(null);
     setError('');
     setSuccess('');
     window.history.pushState({}, '', '/');
@@ -176,6 +182,144 @@ function ToolApp() {
       if (digits.length < 7 || digits.length > 15) return 'Enter a valid phone number';
     }
     return null;
+  };
+
+  // ── BOV: Send email to AutoSheets ──
+  const handleBovSend = async () => {
+    if (!tool) return;
+    setLoading(true);
+    setError('');
+    setSuccess('');
+
+    const filled = Object.entries(formData).filter(([, v]) => v && v.trim());
+    if (filled.length === 0 && attachments.length === 0) {
+      setError('Fill in at least one field or attach a file.');
+      setLoading(false);
+      return;
+    }
+
+    try {
+      const encodedAttachments = await Promise.all(
+        attachments.map(async (file) => ({
+          name: file.name,
+          contentType: file.type,
+          content: await fileToBase64(file),
+        }))
+      );
+
+      const headers = { 'Content-Type': 'application/json' };
+      const storedPw = sessionStorage.getItem('site-password');
+      if (storedPw) headers['x-site-password'] = storedPw;
+
+      const res = await fetch('/api/bov/send', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          formData,
+          attachments: encodedAttachments.length > 0 ? encodedAttachments : undefined,
+        }),
+      });
+
+      if (res.status === 401) {
+        setAuthed(false);
+        sessionStorage.removeItem('site-password');
+        throw new Error('Session expired. Please log in again.');
+      }
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => null);
+        throw new Error(errData?.error || `Error: ${res.status}`);
+      }
+
+      setBovPhase('sent');
+      setSuccess('BOV request sent to AutoSheets. Check your email for the response Excel file, then upload it below.');
+    } catch (err) {
+      setError(err.message || 'Failed to send BOV request.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ── BOV: Upload Excel response and convert HTML → PDF ──
+  const handleBovUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+
+    const validExts = ['.xlsx', '.xls', '.xlsm'];
+    const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+    if (!validExts.includes(ext)) {
+      setError('Please upload an Excel file (.xlsx, .xls, .xlsm)');
+      return;
+    }
+
+    setLoading(true);
+    setBovPhase('converting');
+    setError('');
+    setSuccess('');
+
+    try {
+      // Read file as base64
+      const base64 = await fileToBase64(file);
+
+      const headers = { 'Content-Type': 'application/json' };
+      const storedPw = sessionStorage.getItem('site-password');
+      if (storedPw) headers['x-site-password'] = storedPw;
+
+      // Send to server to extract HTML
+      const res = await fetch('/api/bov/upload', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ fileBase64: base64, fileName: file.name }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => null);
+        throw new Error(errData?.error || 'Failed to process Excel file');
+      }
+
+      const { html } = await res.json();
+
+      // Convert HTML → PDF client-side using html2pdf.js
+      const html2pdf = (await import('html2pdf.js')).default;
+
+      // Create a container for the HTML
+      const container = document.createElement('div');
+      container.innerHTML = html;
+      container.style.cssText = 'position:absolute;left:-9999px;top:0;width:800px;background:#fff;color:#000;';
+      document.body.appendChild(container);
+
+      const pdfBlob = await html2pdf()
+        .set({
+          margin: [10, 10, 10, 10],
+          filename: `resolute-bov-${Date.now()}.pdf`,
+          image: { type: 'jpeg', quality: 0.95 },
+          html2canvas: { scale: 2, useCORS: true },
+          jsPDF: { unit: 'mm', format: 'letter', orientation: 'portrait' },
+        })
+        .from(container)
+        .outputPdf('blob');
+
+      document.body.removeChild(container);
+
+      // Download
+      const url = URL.createObjectURL(pdfBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `resolute-bov-${Date.now()}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      setSuccess('BOV PDF generated and downloading.');
+      setBovPhase('sent'); // Allow re-upload if needed
+    } catch (err) {
+      setError(err.message || 'Failed to convert to PDF.');
+      setBovPhase('sent');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleSubmit = async () => {
@@ -452,13 +596,64 @@ function ToolApp() {
             {error && <div role="alert" style={styles.errorBox}>{error}</div>}
             {success && <div role="status" style={styles.successBox}>{success}</div>}
 
-            <button onClick={handleSubmit} disabled={loading} style={{
-              ...styles.submitBtn,
-              background: loading ? '#a8862d' : '#cba135',
-              cursor: loading ? 'wait' : 'pointer',
-            }}>
-              {loading ? 'Generating PDF...' : 'Generate PDF'}
-            </button>
+            {/* ── BOV custom flow ── */}
+            {tool.customFlow === 'bov' ? (
+              <div>
+                {!bovPhase && (
+                  <button onClick={handleBovSend} disabled={loading} style={{
+                    ...styles.submitBtn,
+                    background: loading ? '#a8862d' : '#cba135',
+                    cursor: loading ? 'wait' : 'pointer',
+                  }}>
+                    {loading ? 'Sending BOV Request...' : 'Send BOV Request'}
+                  </button>
+                )}
+
+                {bovPhase === 'sent' && (
+                  <div style={{ marginTop: 24 }}>
+                    <div style={styles.bovUploadSection}>
+                      <p style={styles.categoryLabel}>Step 2: Upload AutoSheets Response</p>
+                      <p style={{ fontSize: 13, color: '#8a9a8a', marginBottom: 16, lineHeight: 1.5 }}>
+                        Once you receive the Excel file from AutoSheets, upload it here to generate your BOV PDF.
+                      </p>
+                      <button
+                        onClick={() => bovFileInputRef.current?.click()}
+                        disabled={loading}
+                        style={{
+                          ...styles.submitBtn,
+                          background: loading ? '#a8862d' : '#cba135',
+                          cursor: loading ? 'wait' : 'pointer',
+                        }}
+                      >
+                        {loading ? 'Converting to PDF...' : 'Upload Excel File'}
+                      </button>
+                      <input
+                        ref={bovFileInputRef}
+                        type="file"
+                        accept=".xlsx,.xls,.xlsm"
+                        onChange={handleBovUpload}
+                        style={{ display: 'none' }}
+                        aria-hidden="true"
+                      />
+                    </div>
+
+                    <button onClick={() => { setBovPhase(null); setSuccess(''); setError(''); }} style={{
+                      ...styles.backBtn, marginTop: 16, padding: 0,
+                    }}>
+                      ← Send another BOV request
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <button onClick={handleSubmit} disabled={loading} style={{
+                ...styles.submitBtn,
+                background: loading ? '#a8862d' : '#cba135',
+                cursor: loading ? 'wait' : 'pointer',
+              }}>
+                {loading ? 'Generating PDF...' : 'Generate PDF'}
+              </button>
+            )}
           </div>
         )}
       </main>
@@ -634,5 +829,11 @@ const styles = {
     fontSize: 14,
     padding: '2px 6px',
     fontFamily: 'inherit',
+  },
+  bovUploadSection: {
+    padding: '20px',
+    background: '#131f13',
+    border: '1px solid #2a3f2a',
+    borderRadius: 8,
   },
 };
