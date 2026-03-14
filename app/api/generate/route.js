@@ -1,8 +1,9 @@
 import { getToolById, resolveToolFromSubject } from '@/lib/tools';
 import { generatePDF } from '@/lib/pdf';
 
-export const maxDuration = 60; // Vercel Pro plan; change to 10 if on Hobby plan
+export const maxDuration = 60;  // Vercel Pro plan; change to 10 if on Hobby plan
 export const runtime = 'nodejs';
+export const maxRequestBodySize = '50mb'; // Support large PDF attachments (Vercel Pro)
 
 export async function POST(request) {
   try {
@@ -37,6 +38,30 @@ export async function POST(request) {
 
     if (!filledFields && (!attachments || attachments.length === 0)) {
       return Response.json({ error: 'No fields or attachments provided' }, { status: 400 });
+    }
+
+    // Validate attachment sizes (base64 ≈ 1.37x raw bytes)
+    const MAX_SINGLE_MB = 30; // Claude's per-document limit
+    const MAX_TOTAL_MB = 45;  // Stay under Vercel Pro 50MB with headroom
+    if (attachments && attachments.length > 0) {
+      let totalBytes = 0;
+      for (const att of attachments) {
+        if (!att.content) continue;
+        const sizeBytes = att.content.length * 0.75; // base64 → raw
+        const sizeMB = sizeBytes / (1024 * 1024);
+        if (sizeMB > MAX_SINGLE_MB) {
+          return Response.json({
+            error: `Attachment "${att.name || 'unknown'}" is ${sizeMB.toFixed(1)}MB — max is ${MAX_SINGLE_MB}MB per file. Try a smaller or compressed PDF.`,
+          }, { status: 413 });
+        }
+        totalBytes += sizeBytes;
+      }
+      const totalMB = totalBytes / (1024 * 1024);
+      if (totalMB > MAX_TOTAL_MB) {
+        return Response.json({
+          error: `Total attachments are ${totalMB.toFixed(1)}MB — max is ${MAX_TOTAL_MB}MB combined. Remove some files or use smaller PDFs.`,
+        }, { status: 413 });
+      }
     }
 
     // Build message content — text + any PDF/image attachments
