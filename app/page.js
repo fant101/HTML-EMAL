@@ -381,18 +381,20 @@ function ToolApp() {
         throw new Error(errData?.error || `Error: ${res.status}`);
       }
 
-      // Download the PDF
+      // Download the file (PDF or Word)
       const blob = await res.blob();
+      const isDocx = blob.type.includes('wordprocessingml') || blob.type.includes('officedocument');
+      const ext = isDocx ? 'docx' : 'pdf';
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `resolute-${activeTool}-${Date.now()}.pdf`;
+      a.download = `resolute-${activeTool}-${Date.now()}.${ext}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      setSuccess('PDF generated and downloading.');
+      setSuccess(isDocx ? 'Word document generated and downloading.' : 'PDF generated and downloading.');
     } catch (err) {
       setError(err.message || 'Something went wrong.');
     } finally {
@@ -651,7 +653,10 @@ function ToolApp() {
                 background: loading ? '#a8862d' : '#cba135',
                 cursor: loading ? 'wait' : 'pointer',
               }}>
-                {loading ? 'Generating PDF...' : 'Generate PDF'}
+                {loading
+                  ? (tool.outputFormat === 'docx' ? 'Generating Document...' : 'Generating PDF...')
+                  : (tool.outputFormat === 'docx' ? 'Generate Document' : 'Generate PDF')
+                }
               </button>
             )}
           </div>

@@ -1,5 +1,6 @@
 import { getToolById, resolveToolFromSubject } from '@/lib/tools';
 import { generatePDF } from '@/lib/pdf';
+import { generateDocx, DOCX_TOOL_IDS } from '@/lib/docx';
 
 export const maxDuration = 60;  // Vercel Pro plan; change to 10 if on Hobby plan
 export const runtime = 'nodejs';
@@ -227,10 +228,18 @@ export async function POST(request) {
       }, { status: 500 });
     }
 
-    // Generate PDF
-    const pdfBytes = await generatePDF(tool.pdfTemplate, parsedData);
+    // Generate document — Word for editable tools, PDF for the rest
+    if (DOCX_TOOL_IDS.has(tool.pdfTemplate)) {
+      const docxBytes = await generateDocx(tool.pdfTemplate, parsedData);
+      return new Response(docxBytes, {
+        headers: {
+          'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          'Content-Disposition': `attachment; filename="resolute-${tool.id}-${Date.now()}.docx"`,
+        },
+      });
+    }
 
-    // Return PDF
+    const pdfBytes = await generatePDF(tool.pdfTemplate, parsedData);
     return new Response(pdfBytes, {
       headers: {
         'Content-Type': 'application/pdf',
