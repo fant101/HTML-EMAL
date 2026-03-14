@@ -7,6 +7,15 @@ export const maxRequestBodySize = '50mb'; // Support large PDF attachments (Verc
 
 export async function POST(request) {
   try {
+    // Password gate — if SITE_PASSWORD is set, require it via header
+    const sitePassword = process.env.SITE_PASSWORD;
+    if (sitePassword) {
+      const provided = request.headers.get('x-site-password');
+      if (provided !== sitePassword) {
+        return Response.json({ error: 'Unauthorized' }, { status: 401 });
+      }
+    }
+
     const { toolId, formData, emailSubject, emailBody, attachments } = await request.json();
 
     // Resolve tool — from toolId (web app) or emailSubject (email flow)
@@ -110,29 +119,70 @@ export async function POST(request) {
       }
     }
 
-    // Call Claude
-    const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 4096,
-        system: tool.systemPrompt,
-        messages: [{
-          role: 'user',
-          content: messageContent,
-        }],
-      }),
+    // Call Claude with retry logic and timeout
+    const API_TIMEOUT_MS = 50000; // 50s timeout (under Vercel's 60s limit)
+    const MAX_RETRIES = 2;        // Up to 2 retries (3 attempts total)
+    const requestBody = JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 4096,
+      system: tool.systemPrompt,
+      messages: [{
+        role: 'user',
+        content: messageContent,
+      }],
     });
 
-    if (!anthropicRes.ok) {
-      const errBody = await anthropicRes.text();
-      console.error('Anthropic API error:', errBody);
-      return Response.json({ error: 'AI generation failed' }, { status: 502 });
+    let anthropicRes;
+    let lastError;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+
+        anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+          },
+          body: requestBody,
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+
+        // Don't retry on auth errors or rate limits with no retry-after
+        if (anthropicRes.ok || anthropicRes.status === 401 || anthropicRes.status === 403) {
+          break;
+        }
+
+        // Retry on 429 (rate limit) or 5xx (server error)
+        if (anthropicRes.status === 429 || anthropicRes.status >= 500) {
+          lastError = `API returned ${anthropicRes.status}`;
+          if (attempt < MAX_RETRIES) {
+            await new Promise(r => setTimeout(r, (attempt + 1) * 2000));
+            continue;
+          }
+        }
+
+        break; // Non-retryable error
+      } catch (fetchErr) {
+        lastError = fetchErr.name === 'AbortError' ? 'Request timed out' : fetchErr.message;
+        if (attempt < MAX_RETRIES) {
+          await new Promise(r => setTimeout(r, (attempt + 1) * 2000));
+          continue;
+        }
+      }
+    }
+
+    if (!anthropicRes || !anthropicRes.ok) {
+      const errBody = anthropicRes ? await anthropicRes.text().catch(() => '') : '';
+      console.error('Anthropic API error:', lastError || errBody);
+      return Response.json({
+        error: lastError === 'Request timed out'
+          ? 'AI request timed out. Try again or simplify your input.'
+          : 'AI generation failed. Try again in a moment.',
+      }, { status: 502 });
     }
 
     const anthropicData = await anthropicRes.json();
@@ -143,17 +193,37 @@ export async function POST(request) {
       .map(b => b.text)
       .join('');
 
-    // Parse JSON from Claude's response
+    // Parse JSON from Claude's response — multiple fallback strategies
     let parsedData;
-    try {
-      // Strip any markdown fencing if present
-      const cleaned = responseText.replace(/```json\s?/g, '').replace(/```\s?/g, '').trim();
-      parsedData = JSON.parse(cleaned);
-    } catch (parseErr) {
-      console.error('JSON parse error:', parseErr, 'Raw:', responseText);
+    const parseStrategies = [
+      // Strategy 1: Direct parse
+      (text) => JSON.parse(text),
+      // Strategy 2: Strip markdown fencing (```json ... ``` or ``` ... ```)
+      (text) => {
+        const stripped = text.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/g, '').trim();
+        return JSON.parse(stripped);
+      },
+      // Strategy 3: Extract first JSON object from the text
+      (text) => {
+        const match = text.match(/\{[\s\S]*\}/);
+        if (!match) throw new Error('No JSON object found');
+        return JSON.parse(match[0]);
+      },
+    ];
+
+    for (const strategy of parseStrategies) {
+      try {
+        parsedData = strategy(responseText.trim());
+        break;
+      } catch {
+        // Try next strategy
+      }
+    }
+
+    if (!parsedData) {
+      console.error('All JSON parse strategies failed. Raw:', responseText);
       return Response.json({
-        error: 'Failed to parse AI response',
-        raw: responseText,
+        error: 'Failed to parse AI response. Try again.',
       }, { status: 500 });
     }
 
